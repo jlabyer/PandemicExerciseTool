@@ -1,162 +1,97 @@
-#!/usr/bin/env python3
-"""
-Simple test script to verify the Dash frontend functionality
+"""Frontend smoke tests. API tests require a backend running on localhost:8000.
+
+Run from frontend: python -m pytest test/test_app.py
 """
 
-import requests
-import time
 import json
+import time
+
+import requests
 
 
 def test_backend_connection():
-    """Test if Django backend is accessible"""
-    try:
-        response = requests.get('http://localhost:8000/api/reset')
-        if response.status_code == 200:
-            print('✓ Backend connection successful')
-            return True
-        else:
-            print(f'✗ Backend returned status {response.status_code}')
-            return False
-    except requests.ConnectionError:
-        print('✗ Cannot connect to backend at localhost:8000')
-        return False
+    """The backend's simulation list is accessible without resetting its state."""
+    response = requests.get('http://localhost:8000/api/pet/', timeout=10)
+    assert response.status_code == 200, response.text
 
 
 def test_simulation_api():
-    """Test the simulation API endpoints"""
+    """Create and start a simulation, check output access, then stop the task."""
+    params = {
+        'disease_name': 'COVID-19',
+        'model_type': 'seirs-deterministic',
+        'state': 'Texas',
+        'R0': 2.5,
+        'beta_scale': 1.0,
+        'tau': 5.1,
+        'kappa': 1.0,
+        'gamma': 0.1,
+        'chi': 0.5,
+        'rho': 0.8,
+        'nu': '0.01,0.01,0.01,0.01,0.01',
+        'sigma': '1,1,1,1,1',
+        'infectious_period': 7,
+        'immune_period': 0,
+        'initial_infected': json.dumps([
+            {'county': '48201', 'infected': 100, 'age_group': '2'},
+        ]),
+        'npis': json.dumps([]),
+        'vaccine_model': json.dumps({}),
+    }
+
+    response = requests.post('http://localhost:8000/api/pet/', json=params, timeout=10)
+    assert response.status_code == 201, response.text
+    sim_id = response.json().get('id')
+    assert sim_id is not None, 'Simulation creation response is missing its id'
+
+    run_response = requests.get(f'http://localhost:8000/api/pet/{sim_id}/run', timeout=10)
+    task_id = run_response.json().get('task_id') if run_response.status_code == 202 else None
     try:
-        # Test simulation creation
-        params = {
-            'disease_name': 'COVID-19',
-            'R0': 2.5,
-            'beta_scale': 1.0,
-            'tau': 5.1,
-            'kappa': 1.0,
-            'gamma': 0.1,
-            'chi': 0.5,
-            'rho': 0.8,
-            'nu': 0.01,
-            'initial_infected': json.dumps([{'fips_id': '48201', 'cases': 100}]),
-            'npis': json.dumps([]),
-            'vaccine_effectiveness': 0.85,
-            'vaccine_adherence': 0.70,
-            'vaccine_stockpile': 1000000,
-            'vaccine_wastage_factor': 0.1,
-            'vaccine_pro_rata': 'proportional',
-            'antiviral_effectiveness': 0.75,
-            'antiviral_stockpile': 500000,
-            'antiviral_wastage_factor': 0.05,
-        }
+        assert run_response.status_code == 202, run_response.text
+        assert task_id, 'Simulation run response is missing its task_id'
 
-        response = requests.post('http://localhost:8000/api/pet/', json=params)
-        if response.status_code == 201:
-            sim_id = response.json().get('id')
-            print(f'✓ Simulation created with ID: {sim_id}')
-
-            # Test simulation run
-            run_response = requests.get(f'http://localhost:8000/api/pet/{sim_id}/run')
-            if run_response.status_code == 202:
-                task_id = run_response.json().get('task_id')
-                print(f'✓ Simulation started with task ID: {task_id}')
-
-                # Wait a moment and test output retrieval
-                time.sleep(2)
-                output_response = requests.get('http://localhost:8000/api/output/0')
-                if output_response.status_code in [200, 404]:  # 404 is expected if data not ready
-                    print('✓ Output endpoint accessible')
-
-                    # Clean up
-                    requests.get(f'http://localhost:8000/api/delete/{task_id}')
-                    print('✓ Simulation cleanup completed')
-                    return True
-                else:
-                    print(f'✗ Output endpoint returned {output_response.status_code}')
-            else:
-                print(f'✗ Simulation run failed with status {run_response.status_code}')
-        else:
-            print(f'✗ Simulation creation failed with status {response.status_code}')
-
-    except Exception as e:
-        print(f'✗ Simulation API test failed: {e}')
-
-    return False
+        time.sleep(2)
+        output_response = requests.get('http://localhost:8000/api/output/0', timeout=10)
+        # This checks endpoint access; output may not have been generated yet.
+        assert output_response.status_code in (200, 404), output_response.text
+    finally:
+        if task_id:
+            cleanup_response = requests.get(
+                f'http://localhost:8000/api/delete/{task_id}', timeout=10,
+            )
+            assert cleanup_response.status_code == 200, cleanup_response.text
 
 
 def test_data_loading():
-    """Test data loading functionality"""
-    try:
-        from frontend.test.data_loader import DataLoader
+    """County data produces matching dropdown options."""
+    from test.data_loader import DataLoader
 
-        loader = DataLoader()
+    loader = DataLoader()
+    counties = loader.load_texas_counties()
+    assert counties, 'Expected at least one county'
+    assert all({'name', 'fips', 'population'} <= county.keys() for county in counties)
 
-        counties = loader.load_texas_counties()
-        print(f'✓ Loaded {len(counties)} Texas counties')
-
-        options = loader.get_county_dropdown_options()
-        print(f'✓ Generated {len(options)} dropdown options')
-
-        return True
-    except Exception as e:
-        print(f'✗ Data loading test failed: {e}')
-        return False
+    options = loader.get_county_dropdown_options()
+    assert options == [
+        {'label': county['name'], 'value': county['fips']} for county in counties
+    ]
 
 
 def test_visualization():
-    """Test visualization generation"""
-    try:
-        from frontend.test.data_loader import DataLoader
-        from visualization import VisualizationGenerator
+    """The current Dash renderers handle an empty simulation."""
+    import app  # noqa: F401 - Register Dash pages before importing their callbacks.
+    from pages import home
 
-        loader = DataLoader()
-        viz = VisualizationGenerator(loader)
+    empty_map = home._create_empty_map()
+    assert not empty_map.data
+    assert empty_map.layout.height == 400
 
-        # Test with empty data
-        empty_map = viz.create_choropleth_map([], 0, 'percent')
-        print('✓ Empty map generation successful')
+    empty_chart = home._build_chart_figure([], 0, 'seirs-deterministic')
+    assert not empty_chart.data
+    assert empty_chart.layout.title.text == 'Epidemic Curve - No Data Available'
 
-        empty_chart = viz.create_line_chart([])
-        print('✓ Empty chart generation successful')
-
-        empty_table = viz.create_summary_table([], 0, 'percent')
-        print('✓ Empty table generation successful')
-
-        return True
-    except Exception as e:
-        print(f'✗ Visualization test failed: {e}')
-        return False
-
-
-if __name__ == '__main__':
-    print('Testing Pandemic Dash Frontend Components\n')
-
-    tests = [
-        ('Backend Connection', test_backend_connection),
-        ('Data Loading', test_data_loading),
-        ('Visualization', test_visualization),
-        ('Simulation API', test_simulation_api),
-    ]
-
-    results = []
-    for test_name, test_func in tests:
-        print(f'\n--- {test_name} ---')
-        result = test_func()
-        results.append((test_name, result))
-
-    print('\n' + '=' * 50)
-    print('TEST SUMMARY')
-    print('=' * 50)
-
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-
-    for test_name, result in results:
-        status = 'PASS' if result else 'FAIL'
-        print(f'{test_name}: {status}')
-
-    print(f'\nTotal: {passed}/{total} tests passed')
-
-    if passed == total:
-        print('\n🎉 All tests passed! The Dash frontend is ready to use.')
-    else:
-        print(f'\n⚠️  {total - passed} test(s) failed. Please check the issues above.')
+    empty_table, table_style = home.update_table(
+        [], 0, 'percent', {}, '', None, None, 'seirs-deterministic',
+    )
+    assert empty_table.className == 'icon-empty-state'
+    assert table_style == {'display': 'none'}

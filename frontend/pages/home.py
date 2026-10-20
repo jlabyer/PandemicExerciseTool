@@ -14,6 +14,7 @@ import requests
 from constants import (
     MODEL_OPTIONS,
     PRESET_SCENARIOS,
+    SEIHRD_DEFAULTS,
     AGE_GROUPS,
     AGE_GROUP_MAPPING,
     VACCINE_MODELS,
@@ -418,6 +419,7 @@ def create_bold_label_subtitle_number_input(label: str, subtitle: str, inputs: l
             value=spec['input_value'],
             step=spec['input_step'],
             min=spec['input_min'],
+            max=spec.get('input_max'),
             className='mb-2 dbc',
         )
         if spec['input_label'] is not None:
@@ -1531,6 +1533,57 @@ def create_scenario_display(disease_params, initial_cases):
                     ),
                 ]
             )
+        if disease_params['model_type'].startswith('seihrd-'):
+            content.extend(
+                [
+                    html.H6('Disease Parameters', className=title_class),
+                    html.Hr(),
+                    html.P([
+                        html.Span('Scenario: ', className='fw-bold'),
+                        disease_params.get('scenario_name', 'Custom'),
+                    ]),
+                    html.P([
+                        html.Span('Reproduction Number: ', className='fw-bold'),
+                        disease_params.get('R0', 0),
+                    ]),
+                ]
+            )
+            scalar_fields = [
+                ('E_to_IPandIA_days', 'Latent Period'),
+                ('IP_to_IS_days', 'Presymptomatic Period'),
+                ('IS_to_H_days', 'Symptom Onset to Hospitalization'),
+                ('H_to_D_days', 'Hospital Admission to Death'),
+                ('IS_to_R_days', 'Symptom Onset to Recovery'),
+                ('IA_to_R_days', 'Asymptomatic Infection to Recovery'),
+                ('highrisk_hosp_multiplier', 'High-risk Hospitalization Multiplier'),
+                ('rel_inf_IP_to_IS', 'Relative Presymptomatic Infectiousness'),
+                ('rel_inf_IA_to_IS', 'Relative Asymptomatic Infectiousness'),
+            ]
+            for param, label in scalar_fields:
+                value = disease_params.get(param, SEIHRD_DEFAULTS[param])
+                suffix = ' days' if param.endswith('_days') else ''
+                content.append(html.P([
+                    html.Span(f'{label}: ', className='fw-bold'),
+                    f'{value}{suffix}',
+                ]))
+
+            age_fields = [
+                ('H_to_R_days', 'Hospital Admission to Recovery', ' days'),
+                ('prop_E_to_IA', 'Proportion of Infections That Are Asymptomatic (0–1)', ''),
+                ('prop_IS_to_H_lowrisk', 'Low-risk Hospitalization Proportion (0–1)', ''),
+                ('prop_H_to_D', 'Hospital Fatality Proportion (0–1)', ''),
+                ('sigma', 'Relative Susceptibility (ratio)', ''),
+            ]
+            for param, label, suffix in age_fields:
+                values = disease_params.get(param, SEIHRD_DEFAULTS[param])
+                content.extend([
+                    html.P(html.Span(f'{label}:', className='fw-bold')),
+                    html.Ul([
+                        html.Li(f'{age_group["label"]}: {values[i]}{suffix}')
+                        for i, age_group in enumerate(AGE_GROUPS)
+                    ], className='ms-3 mb-3'),
+                ])
+
         if disease_params['model_type'].startswith('seirs-'):
             content.extend(
                 [
@@ -1684,9 +1737,14 @@ def update_disease_param_modal_body(selected_value, preset, is_open):
                     id={'type': 'dp-dropdown', 'param': 'preset'},
                     options=[
                         {'label': scenario['name'], 'value': key}
-                        for key, scenario in PRESET_SCENARIOS[scenario_prefix].items()
+                        for key, scenario in PRESET_SCENARIOS.get(scenario_prefix, {}).items()
                     ],
-                    placeholder='Select a preset scenario...',
+                    placeholder=(
+                        'Select a preset scenario...'
+                        if PRESET_SCENARIOS.get(scenario_prefix)
+                        else 'No preset scenarios available'
+                    ),
+                    disabled=not bool(PRESET_SCENARIOS.get(scenario_prefix)),
                     className='mb-3',
                 ),
             ],
@@ -1723,10 +1781,17 @@ def update_disease_param_modal_body(selected_value, preset, is_open):
             inputs=[
                 {
                     'input_label': None,
-                    'input_id': {'type': 'dp-input', 'param': 'latent-period'},
-                    'input_value': preset.get('tau', preset.get('latent_period', 1.2)),
-                    'input_step': 0.1,
-                    'input_min': 0,
+                    'input_id': {
+                        'type': 'dp-input',
+                        'param': 'E_to_IPandIA_days' if scenario_prefix == 'seihrd' else 'latent-period',
+                    },
+                    'input_value': (
+                        preset.get('E_to_IPandIA_days', SEIHRD_DEFAULTS['E_to_IPandIA_days'])
+                        if scenario_prefix == 'seihrd'
+                        else preset.get('tau', preset.get('latent_period', 1.2))
+                    ),
+                    'input_step': 0.01 if scenario_prefix == 'seihrd' else 0.1,
+                    'input_min': 0.01 if scenario_prefix == 'seihrd' else 0,
                 }
             ],
         ),
@@ -1810,6 +1875,64 @@ def update_disease_param_modal_body(selected_value, preset, is_open):
                 ),
             ]
         )
+    elif scenario_prefix == 'seihrd':
+        scalar_fields = [
+            ('IP_to_IS_days', 'Presymptomatic period (days)',
+             'Average days from presymptomatic to symptomatic infection'),
+            ('IS_to_H_days', 'Symptom onset to hospitalization (days)',
+             'Average days from symptomatic infection to hospital admission'),
+            ('H_to_D_days', 'Hospital admission to death (days)',
+             'Average days from hospital admission to death'),
+            ('IS_to_R_days', 'Symptom onset to recovery (days)',
+             'Average days from symptomatic infection to recovery'),
+            ('IA_to_R_days', 'Asymptomatic infection to recovery (days)',
+             'Average days from asymptomatic infection to recovery'),
+            ('highrisk_hosp_multiplier', 'High-risk hospitalization multiplier',
+             'Hospitalization risk relative to low-risk individuals'),
+            ('rel_inf_IP_to_IS', 'Relative presymptomatic infectiousness',
+             'Infectiousness of presymptomatic individuals relative to symptomatic individuals'),
+            ('rel_inf_IA_to_IS', 'Relative asymptomatic infectiousness',
+             'Infectiousness of asymptomatic individuals relative to symptomatic individuals'),
+        ]
+        for param, label, subtitle in scalar_fields:
+            modal_elems.append(create_bold_label_subtitle_number_input(
+                label=label,
+                subtitle=f' - {subtitle}',
+                inputs=[{
+                    'input_label': None,
+                    'input_id': {'type': 'dp-input', 'param': param},
+                    'input_value': preset.get(param, SEIHRD_DEFAULTS[param]),
+                    'input_step': 0.01,
+                    'input_min': 0.01 if param.endswith('_days') else 0,
+                }],
+            ))
+
+        age_fields = [
+            ('H_to_R_days', 'Hospital admission to recovery (days)',
+             'Average days from hospital admission to recovery, by age'),
+            ('prop_E_to_IA', 'Proportion of infections that are asymptomatic',
+             'Fraction leaving the exposed compartment that become asymptomatic, by age (0–1)'),
+            ('prop_IS_to_H_lowrisk', 'Low-risk hospitalization proportion',
+             'Fraction of low-risk symptomatic individuals hospitalized, by age (0–1)'),
+            ('prop_H_to_D', 'Hospital fatality proportion',
+             'Fraction of hospitalized individuals who die, by age (0–1)'),
+            ('sigma', 'Relative susceptibility (ratio)',
+             'Susceptibility of each age group relative to a reference group'),
+        ]
+        for param, label, subtitle in age_fields:
+            modal_elems.append(create_bold_label_subtitle_number_input(
+                label=label,
+                subtitle=f' - {subtitle}',
+                inputs=[{
+                    'input_label': age_group['label'],
+                    'input_id': {'type': 'dp-input', 'param': f'{param}-{i}'},
+                    'input_value': preset.get(param, SEIHRD_DEFAULTS[param])[i],
+                    'input_step': 0.00001 if param.startswith('prop_') else 0.01,
+                    'input_min': 0.01 if param.endswith('_days') else 0,
+                    'input_max': 1 if param.startswith('prop_') else None,
+                } for i, age_group in enumerate(AGE_GROUPS)],
+            ))
+
     elif scenario_prefix == 'seirs':
         modal_elems.extend(
             [
@@ -2521,6 +2644,19 @@ def save_disease_parameters(n_clicks, dp_input_values, initial_cases, selected_m
         'model_type': selected_model,
     }
 
+    if selected_model and selected_model.startswith('seihrd-'):
+        # Preserve valid zeros for proportions and relative infectiousness.
+        for param, default in SEIHRD_DEFAULTS.items():
+            if isinstance(default, list):
+                disease_params[param] = [
+                    p[f'{param}-{i}'] if p.get(f'{param}-{i}') is not None else value
+                    for i, value in enumerate(default)
+                ]
+            else:
+                disease_params[param] = p[param] if p.get(param) is not None else default
+        if p.get('reproduction-number') is not None:
+            disease_params['R0'] = p['reproduction-number']
+
     logger.info('saved disease parameters = ')
     logger.info(disease_params)
 
@@ -2912,6 +3048,13 @@ def toggle_simulation(
                     'infectious_period': disease_params.get('infectious_period', 14),
                     'immune_period': disease_params.get('immune_period', 0),
                 }
+
+                if payload['model_type'].startswith('seihrd-'):
+                    for param, default in SEIHRD_DEFAULTS.items():
+                        if param == 'sigma':
+                            continue  # Already serialized above for the backend's sigma field.
+                        value = disease_params.get(param, default)
+                        payload[param] = json.dumps(value) if isinstance(default, list) else value
 
                 # Add initial cases - use provided cases or default to Harris County
                 initial_infected = []
