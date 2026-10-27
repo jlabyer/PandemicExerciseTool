@@ -90,8 +90,7 @@ def test_visualization():
     assert not empty_chart.data
     assert empty_chart.layout.title.text == 'Epidemic Curve - No Data Available'
 
-    empty_table, table_style = home.update_table(
-        [], 0, 'percent', {}, '', None, None, 'seirs-deterministic',
-    )
-    assert empty_table.className == 'icon-empty-state'
-    assert table_style == {'display': 'none'}
+    rows, columns, controls = home.update_county_grid(None, 'percent', 'seirs-deterministic')
+    assert rows == []
+    assert columns[2]['headerName'] == 'Recovered'
+    assert controls == {'display': 'none'}
